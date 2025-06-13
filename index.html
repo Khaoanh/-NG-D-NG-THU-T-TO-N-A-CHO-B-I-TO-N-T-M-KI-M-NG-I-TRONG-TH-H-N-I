@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ứng dụng Tìm đường bằng A* - Hà Nội</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://cdn.maptiler.com/maptiler-sdk-js/v1.2.0/maptiler-sdk.css" rel="stylesheet" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        #map {
+            height: 500px;
+            width: 100%;
+        }
+        .controls {
+            background-color: #fff;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            margin: 10px;
+            padding: 15px;
+            width: 500px;
+        }
+        input, select {
+            width: 95%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+        button {
+            background-color: #4285F4;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            margin: 5px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #3367D6;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .info-panel {
+            padding: 10px;
+            background: #f5f5f5;
+            margin: 10px;
+            border-radius: 5px;
+        }
+        .history-item {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+            margin-bottom: 5px;
+            cursor: pointer;
+        }
+        .history-item:hover {
+            background-color: #f0f0f0;
+        }
+        #historyPanel {
+            display: none;
+            margin: 10px;
+        }
+        #loading {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+            z-index: 1000;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        #error-message {
+            color: red;
+            margin: 10px;
+            display: none;
+        }
+        .suggestions {
+            position: absolute;
+            background: white;
+            border: 1px solid #ddd;
+            border-top: none;
+            width: 95%;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 999;
+            display: none;
+        }
+        .suggestion-item {
+            padding: 10px;
+            cursor: pointer;
+        }
+        .suggestion-item:hover {
+            background-color: #f0f0f0;
+        }
+        .error-highlight {
+            background-color: #ffebee;
+            border: 1px solid #f44336;
+            padding: 15px;
+            margin: 10px;
+            border-radius: 5px;
+            color: #d32f2f;
+            font-weight: bold;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.8; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <div id="searchForm">
+            <input id="start" type="text" placeholder="Điểm bắt đầu (Hà Nội)" autocomplete="off">
+            <div id="start-suggestions" class="suggestions"></div>
+            
+            <input id="goal" type="text" placeholder="Điểm kết thúc (Hà Nội)" autocomplete="off">
+            <div id="goal-suggestions" class="suggestions"></div>
+            
+            <select id="travelMode">
+                <option value="DRIVING">Ô tô</option>
+                <option value="WALKING">Đi bộ</option>
+                <option value="MOTORBIKING">Xe máy</option>
+            </select>
+            <button id="searchButton" type="button">Tìm đường</button>
+            <button type="button" id="clearButton">Xóa bản đồ</button>
+            <button type="button" id="historyButton">Lịch sử tìm kiếm</button>
+        </div>
+    </div>
+    
+    
+    
+    <div id="error-message"></div>
+    <div id="map"></div>
+    
+    <div id="historyPanel">
+        <h3>Lịch sử tìm kiếm</h3>
+        <div id="historyList"></div>
+        <button onclick="deleteAllHistory()">Xóa tất cả</button>
+    </div>
+    
+    <div id="loading">
+        <div class="spinner"></div>
+        <div>Đang tìm đường...</div>
+    </div>
+
+    <script src="https://cdn.maptiler.com/maptiler-sdk-js/v1.2.0/maptiler-sdk.umd.js"></script>
+    <script>
+        // Biến toàn cục
+        let map;
+        let startMarker;
+        let goalMarker;
+        let routeLine;
+        let centerPosition = { lat: 21.0285, lng: 105.8542 }; // Tọa độ Hà Nội
+        let mapLoaded = false;
+        let isRequestPending = false; // Biến để theo dõi trạng thái yêu cầu
+        
+        // Khởi tạo MapTiler API key
+        const MAPTILER_API_KEY = 'R1x1XIEN12s6f4qM13Er';
+        
+        // Cấu hình MapTiler
+        maptilersdk.config.apiKey = MAPTILER_API_KEY;
+        
+        function initMap() {
+            try {
+                console.log("Khởi tạo bản đồ với MapTiler API key:", MAPTILER_API_KEY);
+                map = new maptilersdk.Map({
+                    container: 'map',
+                    style: maptilersdk.MapStyle.STREETS,
+                    center: [centerPosition.lng, centerPosition.lat],
+                    zoom: 12
+                });
+                
+                // Thêm marker trung tâm (Hà Nội)
+                const marker = new maptilersdk.Marker()
+                    .setLngLat([centerPosition.lng, centerPosition.lat])
+                    .addTo(map);
+                
+                map.on('load', function() {
+                    console.log("Bản đồ đã tải xong");
+                    mapLoaded = true;
+                });
+                
+                console.log("Bản đồ khởi tạo thành công");
+            } catch (error) {
+                console.error("Lỗi khởi tạo bản đồ:", error);
+                showError("Không thể khởi tạo bản đồ: " + error.message);
+            }
+        }
+        
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+            document.getElementById('searchButton').disabled = show;
+        }
+        
+        function showError(message) {
+            const errorElement = document.getElementById('error-message');
+            errorElement.textContent = message;
+            errorElement.style.display = 'block';
+            
+            // Thêm class để làm nổi bật thông báo lỗi
+            errorElement.className = 'error-highlight';
+            
+            // Sau 5 giây, ẩn thông báo và xóa class highlight
+            setTimeout(() => {
+                errorElement.style.display = 'none';
+                errorElement.className = '';
+            }, 5000);
+            
+            console.log("Thông báo lỗi:", message);
+        }
+        
+        function calculateRoute() {
+            // Nếu đã có yêu cầu đang xử lý, không gửi yêu cầu mới
+            if (isRequestPending) {
+                console.log("Đang có yêu cầu đang xử lý, bỏ qua yêu cầu mới");
+                return;
+            }
+
+            const start = document.getElementById('start').value;
+            const goal = document.getElementById('goal').value;
+            const travelMode = document.getElementById('travelMode').value;
+            
+            if (!start || !goal) {
+                showError('Vui lòng nhập điểm bắt đầu và điểm kết thúc');
+                return;
+            }
+            
+            showLoading(true);
+            isRequestPending = true; // Đánh dấu có yêu cầu đang xử lý
+            
+            // Đảm bảo sử dụng URL tuyệt đối với port đúng
+            const baseUrl = window.location.protocol + '//' + window.location.hostname + ':5000';
+            
+            console.log("Gửi yêu cầu tìm đường từ", start, "đến", goal);
+            
+            // Sử dụng fetch API với method GET
+            fetch(`${baseUrl}/directions?start=${encodeURIComponent(start)}&goal=${encodeURIComponent(goal)}&travelMode=${travelMode}`, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                    'Cache-Control': 'no-cache' // Tránh cache
+                }
+            })
+            .then(response => {
+                console.log("Phản hồi từ server, status:", response.status);
+                if (!response.ok) {
+                    throw new Error(`Server trả về lỗi: ${response.status} ${response.statusText}`);
+                }
+                return response.text();
+            })
+            .then(text => {
+                console.log("Dữ liệu thô từ server:", text);
+                try {
+                    const data = JSON.parse(text);
+                    
+                    // Kiểm tra nếu có lỗi trong phản hồi JSON
+                    if (data.error) {
+                        showError(data.error);
+                        return null;
+                    }
+                    
+                    // Hiển thị thông báo nếu sử dụng dữ liệu thay thế
+                    if (data.fallback && data.message) {
+                        showError(data.message);
+                    }
+                    
+                    return data;
+                } catch (error) {
+                    console.error("Lỗi phân tích JSON:", error);
+                    showError("Lỗi phân tích phản hồi từ server");
+                    return null;
+                }
+            })
+            .then(data => {
+                if (!data) {
+                    console.error("Không có dữ liệu từ server");
+                    return;
+                }
+                
+                // Log toàn bộ dữ liệu nhận được từ server
+                console.log("Dữ liệu nhận được từ server:", data);
+                
+                // Hiển thị thông tin khoảng cách và thời gian
+                console.log("Dữ liệu khoảng cách và thời gian:", data.distance, data.duration);
+                
+                // Cập nhật DOM trực tiếp
+                const distanceElement = document.getElementById('distanceInfo');
+                const durationElement = document.getElementById('durationInfo');
+                
+                console.log("DOM elements:", distanceElement, durationElement);
+                
+                if (distanceElement && data.distance) {
+                    console.log("Cập nhật khoảng cách:", data.distance);
+                    distanceElement.textContent = data.distance;
+                    // Thử cập nhật bằng nhiều cách khác nhau
+                    distanceElement.innerText = data.distance;
+                    document.getElementById('distanceInfo').innerHTML = data.distance;
+                } else {
+                    console.error("Không thể cập nhật khoảng cách:", distanceElement, data.distance);
+                }
+                
+                if (durationElement && data.duration) {
+                    console.log("Cập nhật thời gian:", data.duration);
+                    durationElement.textContent = data.duration;
+                    // Thử cập nhật bằng nhiều cách khác nhau
+                    durationElement.innerText = data.duration;
+                    document.getElementById('durationInfo').innerHTML = data.duration;
+                } else {
+                    console.error("Không thể cập nhật thời gian:", durationElement, data.duration);
+                }
+                
+                // Tạo mảng tọa độ
+                const coordinates = data.path.map(point => [point[1], point[0]]);
+                
+                clearMap();
+                
+                if (coordinates.length < 2) {
+                    showError('Không đủ điểm để vẽ đường đi');
+                    return;
+                }
+                
+                // Di chuyển bản đồ đến điểm bắt đầu
+                map.flyTo({
+                    center: coordinates[0],
+                    zoom: 13
+                });
+                
+                // Thêm marker điểm bắt đầu và kết thúc
+                startMarker = new maptilersdk.Marker({
+                    color: '#4285F4'
+                })
+                .setLngLat(coordinates[0])
+                .addTo(map);
+                
+                goalMarker = new maptilersdk.Marker({
+                    color: '#EA4335'
+                })
+                .setLngLat(coordinates[coordinates.length - 1])
+                .addTo(map);
+                
+                // Vẽ đường đi
+                routeLine = {
+                    type: 'Feature',
+                    properties: {},
+                    geometry: {
+                        type: 'LineString',
+                        coordinates: coordinates
+                    }
+                };
+                
+                // Kiểm tra xem map đã load xong chưa
+                if (mapLoaded) {
+                    addRouteToMap();
+                } else {
+                    map.on('load', addRouteToMap);
+                }
+            })
+            .catch(error => {
+                console.error('Lỗi:', error);
+                showError(error.message || 'Có lỗi xảy ra khi tìm đường');
+            })
+            .finally(() => {
+                showLoading(false);
+                isRequestPending = false; // Đánh dấu đã xử lý xong
+            });
+        }
+        
+        function addRouteToMap() {
+            if (!routeLine) return;
+            
+            try {
+                console.log("Thêm đường đi vào bản đồ...");
+                
+                // Xóa đường đi cũ nếu có
+                if (map.getLayer('route')) {
+                    map.removeLayer('route');
+                }
+                if (map.getSource('route')) {
+                    map.removeSource('route');
+                }
+                
+                // Thêm đường đi mới
+                map.addSource('route', {
+                    type: 'geojson',
+                    data: routeLine
+                });
+                
+                map.addLayer({
+                    id: 'route',
+                    type: 'line',
+                    source: 'route',
+                    layout: {
+                        'line-join': 'round',
+                        'line-cap': 'round'
+                    },
+                    paint: {
+                        'line-color': '#FF0000',
+                        'line-width': 5
+                    }
+                });
+                
+                console.log("Đường đi đã được thêm vào bản đồ");
+                
+                // Đặt vùng nhìn để thấy toàn bộ đường đi
+                const coordinates = routeLine.geometry.coordinates;
+                if (coordinates.length >= 2) {
+                    // Tạo bounds từ tất cả các điểm
+                    const bounds = new maptilersdk.LngLatBounds(coordinates[0], coordinates[0]);
+                    
+                    // Mở rộng bounds để bao gồm tất cả các điểm
+                    for (const coord of coordinates) {
+                        bounds.extend(coord);
+                    }
+                    
+                    // Đặt vùng nhìn của bản đồ để bao gồm tất cả các điểm
+                    map.fitBounds(bounds, {
+                        padding: 50 // Thêm padding xung quanh bounds
+                    });
+                }
+            } catch (error) {
+                console.error('Lỗi khi thêm đường đi vào bản đồ:', error);
+                showError('Không thể hiển thị đường đi trên bản đồ');
+            }
+        }
+        
+        function clearMap() {
+            // Xóa các marker
+            if (startMarker) {
+                startMarker.remove();
+                startMarker = null;
+            }
+            if (goalMarker) {
+                goalMarker.remove();
+                goalMarker = null;
+            }
+            
+            // Xóa đường đi
+            if (map && map.getLayer && map.getSource) {
+                if (map.getLayer('route')) {
+                    map.removeLayer('route');
+                }
+                if (map.getSource('route')) {
+                    map.removeSource('route');
+                }
+            }
+        }
+        
+        function loadHistory() {
+            showLoading(true);
+            
+            // Đảm bảo sử dụng URL tuyệt đối với port đúng
+            const baseUrl = window.location.protocol + '//' + window.location.hostname + ':5000';
+            
+            fetch(`${baseUrl}/saved_directions`, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json'
+                }
+            })
+            .then(response => {
+                console.log("Phản hồi lịch sử, status:", response.status);
+                if (!response.ok) {
+                    throw new Error(`Server trả về lỗi: ${response.status}`);
+                }
+                return response.text();
+            })
+            .then(text => {
+                console.log("Dữ liệu thô lịch sử:", text);
+                try {
+                    const data = JSON.parse(text);
+                    return data;
+                } catch (error) {
+                    console.error("Lỗi phân tích JSON:", error);
+                    showError("Lỗi phân tích phản hồi từ server");
+                    return null;
+                }
+            })
+            .then(data => {
+                if (!data) return; // Dừng nếu không có dữ liệu hợp lệ
+                
+                const historyList = document.getElementById('historyList');
+                historyList.innerHTML = '';
+                
+                if (data.length === 0) {
+                    historyList.innerHTML = '<p>Chưa có lịch sử tìm kiếm</p>';
+                } else {
+                    data.forEach(item => {
+                        const historyItem = document.createElement('div');
+                        historyItem.className = 'history-item';
+                        historyItem.innerHTML = `
+                            <strong>${item[1]} → ${item[2]}</strong><br>
+                            Phương tiện: ${item[3]}<br>
+                            Khoảng cách: ${item[4]} - Thời gian: ${item[5]}
+                            <button onclick="deleteHistoryItem(${item[0]}, event)">Xóa</button>
+                        `;
+                        historyItem.onclick = (e) => {
+                            if (e.target.tagName !== 'BUTTON') {
+                                document.getElementById('start').value = item[1];
+                                document.getElementById('goal').value = item[2];
+                                document.getElementById('travelMode').value = item[3];
+                                calculateRoute();
+                            }
+                        };
+                        historyList.appendChild(historyItem);
+                    });
+                }
+                
+                document.getElementById('historyPanel').style.display = 'block';
+            })
+            .catch(error => {
+                console.error('Lỗi khi tải lịch sử:', error);
+                showError('Không thể tải lịch sử tìm kiếm');
+            })
+            .finally(() => {
+                showLoading(false);
+            });
+        }
+        
+        function deleteHistoryItem(id, event) {
+            event.stopPropagation();
+            if (confirm('Bạn có chắc muốn xóa mục này?')) {
+                showLoading(true);
+                
+                // Đảm bảo sử dụng URL tuyệt đối với port đúng
+                const baseUrl = window.location.protocol + '//' + window.location.hostname + ':5000';
+                
+                fetch(`${baseUrl}/delete_directions/${id}`, { 
+                    method: 'DELETE',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                })
+                .then(response => {
+                    console.log("Phản hồi xóa lịch sử, status:", response.status);
+                    if (!response.ok) {
+                        throw new Error(`Server trả về lỗi: ${response.status}`);
+                    }
+                    return response.text();
+                })
+                .then(text => {
+                    console.log("Dữ liệu thô xóa lịch sử:", text);
+                    try {
+                        const data = JSON.parse(text);
+                        
+                        if (data.error) {
+                            showError(data.error);
+                            return null;
+                        }
+                        
+                        return data;
+                    } catch (error) {
+                        console.error("Lỗi phân tích JSON:", error);
+                        showError("Lỗi phân tích phản hồi từ server");
+                        return null;
+                    }
+                })
+                .then(data => {
+                    if (!data) return;
+                    
+                    if (data.message) {
+                        loadHistory(); // Tải lại lịch sử
+                    }
+                })
+                .catch(error => {
+                    console.error('Lỗi khi xóa lịch sử:', error);
+                    showError('Không thể xóa mục lịch sử');
+                })
+                .finally(() => {
+                    showLoading(false);
+                });
+            }
+        }
+        
+        function deleteAllHistory() {
+            if (confirm('Bạn có chắc muốn xóa tất cả lịch sử?')) {
+                showLoading(true);
+                
+                // Đảm bảo sử dụng URL tuyệt đối với port đúng
+                const baseUrl = window.location.protocol + '//' + window.location.hostname + ':5000';
+                
+                fetch(`${baseUrl}/delete_all_directions`, { 
+                    method: 'DELETE',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                })
+                .then(response => {
+                    console.log("Phản hồi xóa tất cả lịch sử, status:", response.status);
+                    if (!response.ok) {
+                        throw new Error(`Server trả về lỗi: ${response.status}`);
+                    }
+                    return response.text();
+                })
+                .then(text => {
+                    console.log("Dữ liệu thô xóa tất cả lịch sử:", text);
+                    try {
+                        const data = JSON.parse(text);
+                        
+                        if (data.error) {
+                            showError(data.error);
+                            return null;
+                        }
+                        
+                        return data;
+                    } catch (error) {
+                        console.error("Lỗi phân tích JSON:", error);
+                        showError("Lỗi phân tích phản hồi từ server");
+                        return null;
+                    }
+                })
+                .then(data => {
+                    if (!data) return;
+                    
+                    document.getElementById('historyList').innerHTML = '<p>Chưa có lịch sử tìm kiếm</p>';
+                    if (data.message) {
+                        showError(data.message); // Hiển thị thông báo thành công
+                    }
+                })
+                .catch(error => {
+                    console.error('Lỗi khi xóa tất cả lịch sử:', error);
+                    showError('Không thể xóa lịch sử tìm kiếm');
+                })
+                .finally(() => {
+                    showLoading(false);
+                });
+            }
+        }
+        
+        // Xử lý gợi ý địa điểm
+        function setupAutocomplete(inputId, suggestionsId) {
+            const input = document.getElementById(inputId);
+            const suggestionsContainer = document.getElementById(suggestionsId);
+            
+            input.addEventListener('input', debounce(function() {
+                const query = input.value.trim();
+                if (query.length < 3) {
+                    suggestionsContainer.style.display = 'none';
+                    return;
+                }
+                
+                // Thêm "Hà Nội" vào query nếu không có
+                let searchQuery = query;
+                if (query.toLowerCase().indexOf('hà nội') === -1) {
+                    searchQuery = query + ', Hà Nội, Việt Nam';
+                }
+                
+                // Sử dụng API của MapTiler với API key
+                fetch(`https://api.maptiler.com/geocoding/${encodeURIComponent(searchQuery)}.json?key=${MAPTILER_API_KEY}`)
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('Không thể tìm kiếm địa điểm');
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        suggestionsContainer.innerHTML = '';
+                        
+                        if (data.features && data.features.length > 0) {
+                            data.features.slice(0, 5).forEach(feature => {
+                                const item = document.createElement('div');
+                                item.className = 'suggestion-item';
+                                item.textContent = feature.place_name;
+                                item.addEventListener('click', function() {
+                                    input.value = feature.place_name;
+                                    suggestionsContainer.style.display = 'none';
+                                });
+                                suggestionsContainer.appendChild(item);
+                            });
+                            suggestionsContainer.style.display = 'block';
+                        } else {
+                            suggestionsContainer.style.display = 'none';
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Lỗi khi lấy gợi ý:', error);
+                        suggestionsContainer.style.display = 'none';
+                    });
+            }, 300));
+            
+            // Ẩn gợi ý khi click ra ngoài
+            document.addEventListener('click', function(event) {
+                if (event.target !== input && !suggestionsContainer.contains(event.target)) {
+                    suggestionsContainer.style.display = 'none';
+                }
+            });
+        }
+        
+        // Hàm debounce để giảm số lượng request
+        function debounce(func, wait) {
+            let timeout;
+            return function() {
+                const context = this;
+                const args = arguments;
+                clearTimeout(timeout);
+                timeout = setTimeout(() => {
+                    func.apply(context, args);
+                }, wait);
+            };
+        }
+        
+        // Khởi tạo bản đồ khi trang đã tải xong
+        document.addEventListener('DOMContentLoaded', function() {
+            // Kiểm tra nếu đang mở file trực tiếp mà không thông qua server Flask
+            if (window.location.protocol === 'file:') {
+                alert('Để ứng dụng hoạt động đúng, vui lòng mở trang này thông qua server Flask đang chạy ở http://localhost:5000');
+            }
+            
+            initMap();
+            setupAutocomplete('start', 'start-suggestions');
+            setupAutocomplete('goal', 'goal-suggestions');
+            
+            // Xử lý phím Enter để tìm đường
+            document.getElementById('start').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault(); // Ngăn chặn gửi form
+                    document.getElementById('goal').focus();
+                }
+            });
+            
+            document.getElementById('goal').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault(); // Ngăn chặn gửi form
+                    calculateRoute();
+                }
+            });
+            
+            // Xử lý sự kiện click cho các nút
+            document.getElementById('searchButton').addEventListener('click', function(e) {
+                e.preventDefault();
+                calculateRoute();
+            });
+            
+            document.getElementById('clearButton').addEventListener('click', function(e) {
+                e.preventDefault();
+                clearMap();
+            });
+            
+            document.getElementById('historyButton').addEventListener('click', function(e) {
+                e.preventDefault();
+                loadHistory();
+            });
+        });
+    </script>
+</body>
+</html>
